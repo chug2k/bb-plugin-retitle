@@ -1,11 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  MAX_TITLE_CHARS,
-  buildPrompt,
-  buildTranscript,
-  cleanTitle,
-  isUsableTitle,
-} from "./title";
+import { MAX_TITLE_CHARS, buildPrompt, buildTranscript, cleanTitle } from "./title";
 
 const user = (preview: string) => ({ role: "user" as const, preview });
 const assistant = (preview: string) => ({ role: "assistant" as const, preview });
@@ -39,22 +33,29 @@ describe("buildTranscript", () => {
 });
 
 describe("buildPrompt", () => {
-  it("asks for an emoji when the setting is on", () => {
+  it("asks for an emoji, and shows emoji examples, when the setting is on", () => {
     const prompt = buildPrompt({ transcript: "User: hi", currentTitle: null, emoji: true });
-    expect(prompt).toContain("Start the title with one emoji");
-    expect(prompt).not.toContain("Use no emoji.");
+    expect(prompt).toContain("- Start with one emoji");
+    expect(prompt).toContain("\n🐛 Fix flaky login test\n");
+    expect(prompt).not.toContain("- No emoji.");
   });
 
-  it("forbids emoji when the setting is off", () => {
+  it("forbids emoji, and shows plain examples, when the setting is off", () => {
     const prompt = buildPrompt({ transcript: "User: hi", currentTitle: null, emoji: false });
-    expect(prompt).toContain("Use no emoji.");
-    expect(prompt).not.toContain("Start the title with one emoji");
+    expect(prompt).toContain("- No emoji.");
+    expect(prompt).toContain("\nFix flaky login test\n");
+    expect(prompt).not.toMatch(/\p{Extended_Pictographic}/u);
+  });
+
+  it("ends with the answer format", () => {
+    const prompt = buildPrompt({ transcript: "User: hi", currentTitle: null, emoji: true });
+    expect(prompt.endsWith("Your whole reply is the title, on one line, with nothing before or after it.")).toBe(true);
   });
 
   it("names the current title only when there is one", () => {
     expect(
       buildPrompt({ transcript: "User: hi", currentTitle: "Old title", emoji: false }),
-    ).toContain('The current title is "Old title".');
+    ).toContain('- The current title is "Old title".');
     expect(
       buildPrompt({ transcript: "User: hi", currentTitle: null, emoji: false }),
     ).not.toContain("The current title is");
@@ -63,7 +64,7 @@ describe("buildPrompt", () => {
   it("puts the conversation first and the task after it", () => {
     const prompt = buildPrompt({ transcript: "User: hi", currentTitle: null, emoji: false });
     const conversation = prompt.indexOf("<conversation>\nUser: hi\n</conversation>");
-    const task = prompt.indexOf("Write a concise title for the conversation above.");
+    const task = prompt.indexOf("Your task: write a title for the conversation above.");
 
     expect(conversation).toBeGreaterThan(-1);
     expect(task).toBeGreaterThan(conversation);
@@ -97,28 +98,3 @@ describe("cleanTitle", () => {
   });
 });
 
-describe("isUsableTitle", () => {
-  it.each([
-    "Fix flaky login test",
-    "🔄 Git rebase explained",
-    "🔍 What is git bisect",
-    "Improve CI cache hits",
-    "Here-doc parsing in bash",
-  ])("accepts %j", (title) => {
-    expect(isUsableTitle(title)).toBe(true);
-  });
-
-  it.each([
-    "I understand the instructions for creating concise titles",
-    "I'm ready to create concise titles for coding tasks",
-    "Sure, here is a title",
-    "Here is the title",
-    "Understood",
-    "What task would you like me to title?",
-    "Which conversation?",
-    "🔄",
-    "x".repeat(61),
-  ])("rejects %j", (title) => {
-    expect(isUsableTitle(title)).toBe(false);
-  });
-});

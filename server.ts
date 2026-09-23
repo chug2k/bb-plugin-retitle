@@ -21,7 +21,7 @@ import {
   type ThreadFacts,
   type TitleRecord,
 } from "./lib/policy";
-import { buildPrompt, buildTranscript, cleanTitle, isUsableTitle } from "./lib/title";
+import { buildPrompt, buildTranscript, cleanTitle } from "./lib/title";
 
 export const rpcContract = defineRpcContract({
   retitle: {
@@ -31,8 +31,6 @@ export const rpcContract = defineRpcContract({
 });
 
 export const HELPER_TITLE = "Retitle helper";
-/** Helper runs for one rename, when the answer is not a usable title. */
-const MAX_ATTEMPTS = 2;
 const HELPER_POLL_MS = 1_000;
 
 export default async function plugin(bb: BbPluginApi) {
@@ -196,22 +194,17 @@ export default async function plugin(bb: BbPluginApi) {
       emoji: config.emoji,
     });
 
-    let title: string | null = null;
-    for (let attempt = 1; attempt <= MAX_ATTEMPTS && title === null; attempt++) {
-      const answer = cleanTitle(
-        await askHelper({
-          projectId: thread.projectId,
-          environmentId,
-          execution,
-          targetThreadId: threadId,
-          targetArchived: thread.archivedAt !== null,
-          prompt,
-        }),
-      );
-      if (answer !== null && isUsableTitle(answer)) title = answer;
-      else bb.log.warn(`attempt ${attempt} for ${threadId} gave no usable title: ${JSON.stringify(answer)}`);
-    }
-    if (title === null) throw new Error("The helper model did not return a usable title.");
+    const title = cleanTitle(
+      await askHelper({
+        projectId: thread.projectId,
+        environmentId,
+        execution,
+        targetThreadId: threadId,
+        targetArchived: thread.archivedAt !== null,
+        prompt,
+      }),
+    );
+    if (title === null) throw new Error("The helper model returned an empty title.");
 
     await bb.sdk.threads.update({ threadId, title });
     const record: TitleRecord = { title, messageCount: outline.items.length };

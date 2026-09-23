@@ -19,8 +19,6 @@ function createHost(
     thread?: Partial<Parameters<typeof makeThreadResponse>[0]>;
     messages?: Message[];
     answer?: string;
-    /** Answers for each helper run in order. The last one repeats. */
-    answers?: string[];
     helperStatus?: "idle" | "error";
     spawnError?: string;
     models?: string[];
@@ -37,11 +35,6 @@ function createHost(
   const spawns: Record<string, unknown>[] = [];
   const updates: { threadId: string; title?: string | null }[] = [];
   const deleted: string[] = [];
-  let outputCalls = 0;
-  const nextAnswer = () => {
-    const answers = options.answers ?? [options.answer ?? '"🔄 Git rebase explained."'];
-    return answers[Math.min(outputCalls++, answers.length - 1)]!;
-  };
 
   const target = () =>
     makeThreadResponse({
@@ -90,7 +83,7 @@ function createHost(
           spawns.push(args as Record<string, unknown>);
           return makeThreadResponse({ id: HELPER_ID, visibility: "hidden" });
         },
-        output: async () => ({ output: nextAnswer() }),
+        output: async () => ({ output: options.answer ?? '"🔄 Git rebase explained."' }),
         update: async (args: { threadId: string; title?: string | null }) => {
           updates.push(args);
           if (args.title !== undefined) state.title = args.title;
@@ -185,11 +178,11 @@ describe("renaming on demand", () => {
   it("asks for an emoji by default and not when the setting is off", async () => {
     const withEmoji = await load(createHost());
     await withEmoji.harness.behavior.callRpc("retitle", { threadId: THREAD_ID });
-    expect(withEmoji.spawns[0]!.prompt).toContain("Start the title with one emoji");
+    expect(withEmoji.spawns[0]!.prompt).toContain("- Start with one emoji");
 
     const without = await load(createHost({ settings: { emoji: false } }));
     await without.harness.behavior.callRpc("retitle", { threadId: THREAD_ID });
-    expect(without.spawns[0]!.prompt).toContain("Use no emoji.");
+    expect(without.spawns[0]!.prompt).toContain("- No emoji.");
   });
 
   it("fails at once when the helper thread fails, and still deletes it", async () => {
@@ -215,34 +208,7 @@ describe("renaming on demand", () => {
 
     await expect(
       host.harness.behavior.callRpc("retitle", { threadId: THREAD_ID }),
-    ).rejects.toThrow(/did not return a usable title/);
-    expect(host.updates).toEqual([]);
-  });
-
-  it("asks again when the first answer is a reply, not a title", async () => {
-    const host = await load(
-      createHost({
-        answers: [
-          "I understand the instructions. What task would you like me to title?",
-          "🔄 Git rebase explained",
-        ],
-      }),
-    );
-
-    await host.harness.behavior.callRpc("retitle", { threadId: THREAD_ID });
-
-    expect(host.spawns).toHaveLength(2);
-    expect(host.updates).toEqual([{ threadId: THREAD_ID, title: "🔄 Git rebase explained" }]);
-    expect(host.deleted).toEqual([HELPER_ID, HELPER_ID]);
-  });
-
-  it("gives up after two answers that are not titles", async () => {
-    const host = await load(createHost({ answers: ["I'm ready to create concise titles."] }));
-
-    await expect(
-      host.harness.behavior.callRpc("retitle", { threadId: THREAD_ID }),
-    ).rejects.toThrow(/did not return a usable title/);
-    expect(host.spawns).toHaveLength(2);
+    ).rejects.toThrow(/empty title/);
     expect(host.updates).toEqual([]);
   });
 

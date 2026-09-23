@@ -4,8 +4,6 @@
 /** Characters of conversation sent to the model. */
 export const MAX_TRANSCRIPT_CHARS = 12_000;
 export const MAX_TITLE_CHARS = 80;
-/** A usable title is at most this long. The prompt asks for about 40. */
-export const MAX_USABLE_TITLE_CHARS = 60;
 
 export interface OutlineItem {
   role: "user" | "assistant";
@@ -42,37 +40,50 @@ export function buildTranscript(
     .join("\n\n");
 }
 
+/** Example titles, shown to the model so it sees the exact answer format. */
+const EXAMPLES = [
+  ["🐛", "Fix flaky login test"],
+  ["🧭", "Add back and forward thread navigation"],
+  ["📦", "Publish the retitle plugin"],
+] as const;
+
 export function buildPrompt(args: {
   transcript: string;
   currentTitle: string | null;
   emoji: boolean;
 }): string {
   // The conversation comes first and the task last. With the task first, a
-  // small model sometimes answers the instructions ("I understand…") and
-  // ignores the conversation. The rules copy bb's own title prompt, so these
-  // titles look like bb's.
+  // small model sometimes answered the instructions ("I understand…") and
+  // ignored the conversation. The examples show the exact answer format. The
+  // title rules copy bb's own title prompt, so these titles look like bb's.
+  const examples = EXAMPLES.map(([emoji, text]) => (args.emoji ? `${emoji} ${text}` : text));
   return [
-    "Below is a conversation between a user and a coding agent.",
+    "Here is a conversation between a user and a coding agent.",
     "",
     "<conversation>",
     args.transcript,
     "</conversation>",
     "",
-    "Write a concise title for the conversation above.",
-    "Do not use any tools. Do not read or change files. Do not answer the conversation or ask a question. Reply with the title only.",
+    "Your task: write a title for the conversation above.",
     "",
-    "The title is short, clear, sentence case, and in the same language as the conversation.",
-    "Keep it under about 40 characters; for scripts that do not separate words with spaces, that is roughly 20 characters.",
+    "Rules:",
+    "- Sentence case, in the same language as the conversation.",
+    "- Under about 40 characters; for scripts that do not separate words with spaces, that is roughly 20 characters.",
     args.emoji
-      ? "Start the title with one emoji that fits the topic, then a space. Use no other emoji."
-      : "Use no emoji.",
-    "No quotes and no trailing period.",
-    "",
-    "Consider the user's intent when titling to make it useful. For instance, if they detail specific tools to use to solve a problem, it is the problem that should be the title, not the tools that should be used.",
-    "Title what the conversation is about now, not only how it started.",
+      ? "- Start with one emoji that fits the topic, then a space. Use no other emoji."
+      : "- No emoji.",
+    "- No quotes and no trailing period.",
+    "- Title the problem, not the tools. If the user names tools to solve a problem, the problem is the title.",
+    "- Title what the conversation is about now, not only how it started.",
     ...(args.currentTitle
-      ? [`The current title is "${args.currentTitle}". Replace it if it no longer fits.`]
+      ? [`- The current title is "${args.currentTitle}". Replace it if it no longer fits.`]
       : []),
+    "",
+    "Example titles:",
+    ...examples,
+    "",
+    "Do not use tools. Do not answer the conversation, and do not ask a question.",
+    "Your whole reply is the title, on one line, with nothing before or after it.",
   ].join("\n");
 }
 
@@ -93,19 +104,3 @@ export function cleanTitle(raw: string): string | null {
   return title.length > MAX_TITLE_CHARS ? `${title.slice(0, MAX_TITLE_CHARS - 1)}…` : title;
 }
 
-/**
- * Words that start a reply to the prompt, not a title. A small model
- * sometimes answers "I understand…" or asks which task to title.
- */
-const CHATTER = /^(i\b|i'm\b|i am\b|sure\b|okay\b|ok\b|here is\b|here's\b|understood\b|certainly\b|what\b.*\?$|please\b)/i;
-
-/**
- * True when a cleaned answer can be a title: short, one statement, and not a
- * reply to the prompt. The check ignores a leading emoji.
- */
-export function isUsableTitle(title: string): boolean {
-  if (title.length > MAX_USABLE_TITLE_CHARS) return false;
-  if (title.endsWith("?")) return false;
-  const words = title.replace(/^[^\p{L}\p{N}]+/u, "");
-  return words !== "" && !CHATTER.test(words);
-}
