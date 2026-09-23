@@ -5,8 +5,9 @@ description: Rename a bb thread so that its title agrees with the conversation. 
 
 # Retitle a thread
 
-The Retitle plugin writes thread titles with a small model. It renames threads
-automatically when a turn ends, so usually you do not have to do anything.
+The Retitle plugin writes thread titles with a small model. By default it
+renames a thread one time, after the first reply. After that, it renames only
+when the user asks.
 
 To rename a thread now:
 
@@ -25,5 +26,6 @@ renaming stops for that thread.
 In the app, the same action is ⌘⌥R and the quick-palette command
 "Retitle: rename thread from the conversation".
 
-Settings (`bb plugin config retitle`): `autoRename`, `emoji`, `providerId`,
+Settings (`bb plugin config retitle`): `autoRename`,
+`renameEveryMessages`, `emoji`, `providerId`,
 `model`, `timeoutSeconds`. See the plugin README for details.

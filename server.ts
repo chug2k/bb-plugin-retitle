@@ -1,8 +1,9 @@
-// bb-plugin-retitle — keep thread titles current with a small, fast model.
+// bb-plugin-retitle — write thread titles with a small, fast model.
 //
 // bb titles a thread one time, from the first message. This plugin writes a
-// new title from the conversation: automatically when a turn ends, and on
-// demand from ⌘⌥R, the quick palette, or `bb retitle`.
+// new title from the conversation: once after the first reply, and when you
+// press ⌘⌥R, run the quick-palette command, or run `bb retitle`. A setting
+// also renames a thread again after a number of new messages.
 //
 // A plugin cannot call bb's own title model (BB_INFERENCE). So the plugin
 // starts a short hidden helper thread on a small model, reads its answer, and
@@ -10,6 +11,17 @@
 // does not make a new worktree.
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import {
+  AUTO_MODES,
+  DEFAULT_AUTO_MODE_LABEL,
+  decideAutoRename,
+  needsMessageCount,
+  parseAutoMode,
+  pickSmallModel,
+  type ThreadFacts,
+  type TitleRecord,
+} from "./lib/policy";
+import { buildPrompt, buildTranscript, cleanTitle, isUsableTitle } from "./lib/title";
 
 export const rpcContract = defineRpcContract({
   retitle: {
@@ -18,109 +30,10 @@ export const rpcContract = defineRpcContract({
   },
 });
 
-/** Characters of conversation sent to the model. */
-const MAX_TRANSCRIPT_CHARS = 12_000;
-const MAX_TITLE_CHARS = 80;
-const HELPER_TITLE = "Retitle helper";
+export const HELPER_TITLE = "Retitle helper";
+/** Helper runs for one rename, when the answer is not a usable title. */
+const MAX_ATTEMPTS = 2;
 const HELPER_POLL_MS = 1_000;
-/** In "keep up to date" mode, rename again after this many new messages. */
-const MESSAGES_BEFORE_UPDATE = 6;
-
-/**
- * Small models per provider, best first. The plugin uses the first one that
- * the provider's model list contains. Other providers use their default model.
- */
-const SMALL_MODELS: Record<string, readonly string[]> = {
-  "claude-code": ["claude-haiku-4-5-20251001", "claude-sonnet-5"],
-  codex: ["gpt-5.4-mini", "gpt-5.6-luna"],
-};
-
-const AUTO_MODES = {
-  "Keep the title up to date": "always",
-  "After the first reply only": "once",
-  Off: "off",
-} as const;
-type AutoMode = (typeof AUTO_MODES)[keyof typeof AUTO_MODES];
-
-/** The last title this plugin wrote on a thread. */
-interface TitleRecord {
-  title: string;
-  /** Number of outline messages when the plugin wrote the title. */
-  messageCount: number;
-}
-
-type OutlineItem = { role: "user" | "assistant"; preview: string };
-
-/**
- * bb cuts each outline message to 200 characters. Keep the first message,
- * because it gives the task, and then add messages from the newest back.
- */
-function buildTranscript(items: readonly OutlineItem[]): string {
-  const lines = items
-    .map((item) => {
-      const text = item.preview.replace(/\s+/g, " ").trim();
-      return text === "" ? null : `${item.role === "user" ? "User" : "Assistant"}: ${text}`;
-    })
-    .filter((line): line is string => line !== null);
-
-  const first = lines[0] ?? "";
-  const kept: string[] = [];
-  let used = first.length;
-  for (let i = lines.length - 1; i >= 1; i--) {
-    const line = lines[i]!;
-    if (used + line.length > MAX_TRANSCRIPT_CHARS) break;
-    kept.unshift(line);
-    used += line.length;
-  }
-  const skipped = lines.length - 1 - kept.length;
-  return [first, ...(skipped > 0 ? [`[… ${skipped} earlier messages omitted …]`] : []), ...kept]
-    .filter((line) => line !== "")
-    .join("\n\n");
-}
-
-function buildPrompt(args: {
-  transcript: string;
-  currentTitle: string | null;
-  emoji: boolean;
-}): string {
-  // The rules copy bb's own title prompt, so these titles look like bb's.
-  return [
-    "You create concise titles for coding tasks.",
-    "Do not use any tools. Do not read or change files. Reply with the title only.",
-    "",
-    "The title is short, clear, sentence case, and in the same language as the conversation.",
-    "Keep it under about 40 characters; for scripts that do not separate words with spaces, that is roughly 20 characters.",
-    args.emoji
-      ? "Start the title with one emoji that fits the topic, then a space. Use no other emoji."
-      : "Use no emoji.",
-    "No quotes and no trailing period.",
-    "",
-    "Consider the user's intent when titling to make it useful. For instance, if they detail specific tools to use to solve a problem, it is the problem that should be the title, not the tools that should be used.",
-    "Title what the conversation is about now, not only how it started.",
-    ...(args.currentTitle ? [`The current title is "${args.currentTitle}". Replace it if it no longer fits.`] : []),
-    "",
-    "<conversation>",
-    args.transcript,
-    "</conversation>",
-  ].join("\n");
-}
-
-/** Take the first line that is not empty, and remove quotes and markdown. */
-function cleanTitle(raw: string): string | null {
-  const line = raw
-    .split("\n")
-    .map((part) => part.trim())
-    .find((part) => part !== "");
-  if (line === undefined) return null;
-  const title = line
-    .replace(/^(title|new title)\s*:\s*/i, "")
-    .replace(/^[#>*_`\s-]+|[*_`\s]+$/g, "")
-    .replace(/^["'“”‘’]+|["'“”‘’]+$/g, "")
-    .replace(/\.$/, "")
-    .trim();
-  if (title === "") return null;
-  return title.length > MAX_TITLE_CHARS ? `${title.slice(0, MAX_TITLE_CHARS - 1)}…` : title;
-}
 
 export default async function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({
@@ -128,9 +41,16 @@ export default async function plugin(bb: BbPluginApi) {
       type: "select",
       label: "Automatic renaming",
       description:
-        "When to write a new title. The plugin never replaces a title that you typed yourself.",
+        "Rename a thread one time, after its first reply. The plugin does not replace a title that you typed yourself.",
       options: Object.keys(AUTO_MODES),
-      default: "Keep the title up to date",
+      default: DEFAULT_AUTO_MODE_LABEL,
+    },
+    renameEveryMessages: {
+      type: "number",
+      label: "Rename again every N messages",
+      description:
+        "After the first rename, rename the thread again after this many new messages. 0 means never.",
+      default: 0,
     },
     emoji: {
       type: "boolean",
@@ -162,8 +82,6 @@ export default async function plugin(bb: BbPluginApi) {
   settings.onChange((next) => {
     config = next;
   });
-  const autoMode = (): AutoMode =>
-    AUTO_MODES[config.autoRename as keyof typeof AUTO_MODES] ?? "always";
 
   const recordKey = (threadId: string) => `title:${threadId}`;
 
@@ -179,9 +97,6 @@ export default async function plugin(bb: BbPluginApi) {
     const providerId = config.providerId.trim() || thread.providerId;
     const configuredModel = config.model.trim();
     if (configuredModel !== "") return { providerId, model: configuredModel };
-
-    const preferred = SMALL_MODELS[providerId] ?? [];
-    if (preferred.length === 0) return { providerId };
     try {
       const catalog = await bb.sdk.providers.models(
         thread.environmentId !== null
@@ -189,7 +104,7 @@ export default async function plugin(bb: BbPluginApi) {
           : { providerId },
       );
       const available = new Set(catalog.models.flatMap((entry) => [entry.id, entry.model]));
-      const model = preferred.find((candidate) => available.has(candidate));
+      const model = pickSmallModel(providerId, available);
       return model !== undefined ? { providerId, model } : { providerId };
     } catch (error) {
       bb.log.warn(`could not read ${providerId} models; using its default: ${String(error)}`);
@@ -218,6 +133,7 @@ export default async function plugin(bb: BbPluginApi) {
     environmentId: string | null;
     execution: { providerId: string; model?: string };
     targetThreadId: string;
+    targetArchived: boolean;
     prompt: string;
   }): Promise<string> {
     let helper: Awaited<ReturnType<typeof bb.sdk.threads.spawn>>;
@@ -238,8 +154,9 @@ export default async function plugin(bb: BbPluginApi) {
         // Plugin metadata marks the helper as this plugin's thread, so
         // automatic renaming skips it.
         pluginMetadata: { helper: true },
-        // If the plugin stops during a run, bb removes the helper with its target.
-        lifecycleOwnerThreadId: args.targetThreadId,
+        // If the plugin stops during a run, bb removes the helper with its
+        // target. bb accepts only a live thread as the owner.
+        ...(args.targetArchived ? {} : { lifecycleOwnerThreadId: args.targetThreadId }),
       });
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
@@ -272,19 +189,29 @@ export default async function plugin(bb: BbPluginApi) {
     if (transcript === "") throw new Error("This thread has no messages yet.");
 
     const environmentId = thread.environmentId ?? null;
-    const raw = await askHelper({
-      projectId: thread.projectId,
-      environmentId,
-      execution: await resolveHelperExecution({ providerId: thread.providerId, environmentId }),
-      targetThreadId: threadId,
-      prompt: buildPrompt({
-        transcript,
-        currentTitle: thread.title ?? null,
-        emoji: config.emoji,
-      }),
+    const execution = await resolveHelperExecution({ providerId: thread.providerId, environmentId });
+    const prompt = buildPrompt({
+      transcript,
+      currentTitle: thread.title ?? null,
+      emoji: config.emoji,
     });
-    const title = cleanTitle(raw);
-    if (title === null) throw new Error("The helper model returned an empty title.");
+
+    let title: string | null = null;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS && title === null; attempt++) {
+      const answer = cleanTitle(
+        await askHelper({
+          projectId: thread.projectId,
+          environmentId,
+          execution,
+          targetThreadId: threadId,
+          targetArchived: thread.archivedAt !== null,
+          prompt,
+        }),
+      );
+      if (answer !== null && isUsableTitle(answer)) title = answer;
+      else bb.log.warn(`attempt ${attempt} for ${threadId} gave no usable title: ${JSON.stringify(answer)}`);
+    }
+    if (title === null) throw new Error("The helper model did not return a usable title.");
 
     await bb.sdk.threads.update({ threadId, title });
     const record: TitleRecord = { title, messageCount: outline.items.length };
@@ -303,40 +230,23 @@ export default async function plugin(bb: BbPluginApi) {
     return run;
   }
 
-  /**
-   * Decide if a thread that just went idle gets a new title.
-   *
-   * bb writes a title from the first message, and that title cannot be told
-   * apart from a typed one. So the first rename replaces any title. After
-   * that, the plugin renames only while the title is still the one it wrote:
-   * a changed title means that you typed it, and the plugin stops.
-   */
-  async function autoRetitle(thread: {
-    id: string;
-    title: string | null;
-    visibility: string;
-    parentThreadId: string | null;
-    originPluginId: string | null;
-    archivedAt: number | null;
-    deletedAt: number | null;
-  }): Promise<void> {
-    const mode = autoMode();
-    if (mode === "off") return;
-    // Skip hidden threads (this includes the helpers), threads that another
-    // thread started (their parent gave the title), and closed threads.
-    if (thread.visibility === "hidden" || thread.originPluginId === bb.pluginId) return;
-    if (thread.parentThreadId !== null) return;
-    if (thread.archivedAt !== null || thread.deletedAt !== null) return;
+  async function autoRetitle(thread: ThreadFacts & { id: string }): Promise<void> {
     if (inFlight.has(thread.id)) return;
-
-    const record = await bb.storage.kv.get<TitleRecord>(recordKey(thread.id));
-    if (record !== undefined) {
-      if (mode === "once") return;
-      if (record.title !== thread.title) return;
-      const outline = await bb.sdk.threads.conversationOutline({ threadId: thread.id });
-      if (outline.items.length - record.messageCount < MESSAGES_BEFORE_UPDATE) return;
-    }
-    await retitleOnce(thread.id);
+    const mode = parseAutoMode(config.autoRename);
+    const renameEveryMessages = config.renameEveryMessages;
+    const record = (await bb.storage.kv.get<TitleRecord>(recordKey(thread.id))) ?? null;
+    const messageCount = needsMessageCount({ mode, renameEveryMessages, record })
+      ? (await bb.sdk.threads.conversationOutline({ threadId: thread.id })).items.length
+      : null;
+    const decision = decideAutoRename({
+      thread,
+      pluginId: bb.pluginId,
+      mode,
+      renameEveryMessages,
+      record,
+      messageCount,
+    });
+    if (decision.rename) await retitleOnce(thread.id);
   }
 
   bb.events.on("thread.idle", ({ thread }) => {

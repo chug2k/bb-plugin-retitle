@@ -1,8 +1,8 @@
 # bb-plugin-retitle
 
-Keeps [bb](https://getbb.app) thread titles current. A small, fast model reads
-the conversation and writes a new title when a turn ends. You can also rename a
-thread on demand with ⌘⌥R.
+Writes [bb](https://getbb.app) thread titles with a small, fast model. The model
+reads the conversation and writes a new title after the first reply, and each
+time you press ⌘⌥R.
 
 bb writes a title one time, from the first message. When the work changes, the
 title does not. This plugin updates it.
@@ -15,8 +15,9 @@ bb plugin install https://github.com/chug2k/bb-plugin-retitle
 
 ## Use
 
-- **Automatic.** When a turn ends, the plugin writes a new title. By default it
-  does this again after every 6 new messages.
+- **Automatic.** After the first reply, the plugin writes a new title one time.
+  To rename again as the conversation grows, set "Rename again every N
+  messages".
 - **Keyboard.** Press ⌘⌥R (Ctrl+Alt+R on Windows and Linux) to rename the open
   thread. Change the key in Settings → Keyboard.
 - **Quick palette.** Press ⌘⇧P and run "Retitle: rename thread from the
@@ -27,6 +28,10 @@ bb plugin install https://github.com/chug2k/bb-plugin-retitle
 The plugin does not replace a title that you typed yourself. If you change a
 title, automatic renaming stops for that thread. ⌘⌥R and `bb retitle` still
 work.
+
+One exception: bb's own first title looks the same to the plugin as a typed
+title. So if you type a title before the first reply ends, the first automatic
+rename replaces it.
 
 ## Model
 
@@ -46,7 +51,8 @@ Change the settings in Settings → Installed plugins → Retitle, or with
 
 | Setting | Default | Function |
 | --- | --- | --- |
-| `autoRename` | Keep the title up to date | Also "After the first reply only" or "Off". |
+| `autoRename` | After the first reply | "Off" renames only when you press ⌘⌥R or run `bb retitle`. |
+| `renameEveryMessages` | 0 | After the first rename, rename again after this many new messages. 0 means never. |
 | `emoji` | on | Starts each title with one emoji, for example "🐛 Fix flaky login test". |
 | `providerId` | empty | Provider for the helper. Empty means the provider of the thread. |
 | `model` | empty | Model for the helper. Empty means a small model from the table above. |
@@ -74,10 +80,18 @@ archived threads.
 
 ```sh
 npm install --include=dev
-npx tsc -p .
+npm run typecheck
+npm test
 bb plugin build
 bb plugin install .
 ```
+
+| File | Content |
+| --- | --- |
+| `server.ts` | Settings, the helper thread, automatic renaming, RPC, and CLI |
+| `lib/title.ts` | The prompt, and the cleanup of the model's answer |
+| `lib/policy.ts` | When to rename automatically, and which small model to use |
+| `app.tsx` | The ⌘⌥R command and the quick-palette entry |
 
 ## License
 

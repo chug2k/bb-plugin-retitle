@@ -1,9 +1,10 @@
-bb writes a thread title one time, from the first message. Retitle keeps the
-title current as the work changes.
+bb writes a thread title one time, from the first message. Retitle writes a
+better title from the conversation.
 
-When a turn ends, a small, fast model reads the conversation and writes a new
-title. Press ⌘⌥R, or run the quick-palette command, to rename a thread on
-demand. Titles can start with an emoji that fits the topic.
+After the first reply, a small, fast model reads the conversation and writes a
+new title. Press ⌘⌥R, or run the quick-palette command, to rename a thread
+again. A setting renames threads again after a number of new messages. Titles
+can start with an emoji that fits the topic.
 
 The plugin uses the provider of each thread, so it works with Claude Code,
 Codex, and other providers without an API key. On Claude Code it uses Haiku
