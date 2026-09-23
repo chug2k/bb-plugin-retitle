@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-retitle",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "engines": {
     "bb": ">=0.43",
@@ -10,7 +10,7 @@
     "name": "Retitle",
     "description": "Writes thread titles with a small model: after the first reply, and when you press \u2318\u2325R.",
     "branding": {
-      "icon": "PencilLine"
+      "icon": "EditFile"
     },
     "server": "./server.ts",
     "app": "./app.tsx"
