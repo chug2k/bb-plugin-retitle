@@ -23,7 +23,8 @@ To set an exact title, do not use this command. Use
 `bb thread update --self --title "<title>"`. After a manual title, automatic
 renaming stops for that thread.
 
-In the app, the same action is ⌘⌥R and the quick-palette command
+In the app, the same action is ⌘⌥R, the pencil button in the thread header,
+and the quick-palette command
 "Retitle: rename thread from the conversation".
 
 Settings (`bb plugin config retitle`): `autoRename`,

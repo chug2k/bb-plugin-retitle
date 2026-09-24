@@ -20,6 +20,7 @@ bb plugin install https://github.com/chug2k/bb-plugin-retitle
   messages".
 - **Keyboard.** Press ⌘⌥R (Ctrl+Alt+R on Windows and Linux) to rename the open
   thread. Change the key in Settings → Keyboard.
+- **Header button.** Click the pencil button in the thread header.
 - **Quick palette.** Press ⌘⇧P and run "Retitle: rename thread from the
   conversation".
 - **CLI.** `bb retitle` renames the current thread. `bb retitle <thread-id>`
@@ -91,7 +92,7 @@ bb plugin install .
 | `server.ts` | Settings, the helper thread, automatic renaming, RPC, and CLI |
 | `lib/title.ts` | The prompt, and the cleanup of the model's answer |
 | `lib/policy.ts` | When to rename automatically, and which small model to use |
-| `app.tsx` | The ⌘⌥R command and the quick-palette entry |
+| `app.tsx` | The ⌘⌥R command, the quick-palette entry, and the header button |
 
 ## License
 

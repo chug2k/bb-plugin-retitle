@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import type { PluginRpcTestHandlers } from "@get-bb/plugin-sdk/testing/app";
 import type { PluginAppBuilder, PluginCommandRegistration } from "@get-bb/plugin-sdk/app";
@@ -23,7 +23,7 @@ async function captureCommands(): Promise<PluginCommandRegistration[]> {
   const commands: PluginCommandRegistration[] = [];
   const builder = {
     commands: { register: (registration: PluginCommandRegistration) => commands.push(registration) },
-    slots: { experimental_appOverlay: () => {} },
+    slots: { experimental_appOverlay: () => {}, experimental_threadHeaderAction: () => {} },
   } as unknown as PluginAppBuilder;
   definition.setup(builder);
   return commands;
@@ -39,6 +39,11 @@ describe("registrations", () => {
   it("mounts the RPC bridge as an app overlay", async () => {
     const app = await loadPluginApp(() => import("./app"));
     expect(app.appOverlays.map((overlay) => overlay.id)).toEqual(["rpc-bridge"]);
+  });
+
+  it("adds a button to the thread header", async () => {
+    const app = await loadPluginApp(() => import("./app"));
+    expect(app.threadHeaderActions.map((action) => action.id)).toEqual(["retitle"]);
   });
 
   it("registers the rename command on ⌘⌥R", async () => {
@@ -90,5 +95,63 @@ describe("the rename command", () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
 
     expect(bridge.inspection.rpcCalls).toEqual([]);
+  });
+});
+
+describe("the header button", () => {
+  const props = { threadId: "thr_1", projectId: "proj_1", isCompactViewport: false };
+  const label = "Rename from the conversation (⌥⌘R)";
+
+  it("renames the thread it belongs to", async () => {
+    const app = await loadPluginApp(() => import("./app"));
+    const slot = renderSlot<typeof props, typeof rpcContract>(app.threadHeaderActions[0]!, props, {
+      rpc: handlers,
+    });
+
+    fireEvent.click(slot.getByRole("button", { name: label }));
+
+    await waitFor(() =>
+      expect(slot.inspection.rpcCalls).toEqual([
+        { method: "retitle", input: { threadId: "thr_1" } },
+      ]),
+    );
+  });
+
+  it("is disabled while a rename runs, and ignores a second click", async () => {
+    let finish!: () => void;
+    const app = await loadPluginApp(() => import("./app"));
+    const slot = renderSlot<typeof props, typeof rpcContract>(app.threadHeaderActions[0]!, props, {
+      rpc: {
+        retitle: () =>
+          new Promise((resolve) => {
+            finish = () => resolve({ title: "🔄 Git rebase explained", previousTitle: null });
+          }),
+      },
+    });
+    const button = slot.getByRole("button", { name: label });
+
+    fireEvent.click(button);
+    await waitFor(() => expect(button.hasAttribute("disabled")).toBe(true));
+    fireEvent.click(button);
+    finish();
+
+    await waitFor(() => expect(button.hasAttribute("disabled")).toBe(false));
+    expect(slot.inspection.rpcCalls).toHaveLength(1);
+  });
+
+  it("stays usable after a failed rename", async () => {
+    const app = await loadPluginApp(() => import("./app"));
+    const slot = renderSlot<typeof props, typeof rpcContract>(app.threadHeaderActions[0]!, props, {
+      rpc: {
+        retitle: () => {
+          throw new Error("The helper thread on claude-code failed.");
+        },
+      },
+    });
+    const button = slot.getByRole("button", { name: label });
+
+    fireEvent.click(button);
+    await waitFor(() => expect(slot.inspection.rpcCalls).toHaveLength(1));
+    await waitFor(() => expect(button.hasAttribute("disabled")).toBe(false));
   });
 });

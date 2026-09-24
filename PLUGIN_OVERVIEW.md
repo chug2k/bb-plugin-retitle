@@ -6,8 +6,9 @@ conversation instead.
 
 - **A new title after the first reply.** A small model reads the conversation
   and writes a short title, one time per thread.
-- **⌘⌥R to rename again.** Press it in any thread, or run "Retitle: rename
-  thread from the conversation" from the quick palette. `bb retitle` does the
+- **⌘⌥R to rename again.** Press it in any thread, click the pencil button in
+  the thread header, or run "Retitle: rename thread from the conversation"
+  from the quick palette. `bb retitle` does the
   same from a terminal or an agent.
 - **Optional emoji.** Titles can start with one emoji that fits the topic, for
   example "🐛 Fix flaky login test".
