@@ -29,4 +29,4 @@ and the quick-palette command
 
 Settings (`bb plugin config retitle`): `autoRename`,
 `renameEveryMessages`, `emoji`, `providerId`,
-`model`, `timeoutSeconds`. See the plugin README for details.
+`model`, `reasoningLevel`, `maxTitleLength`, `timeoutSeconds`. See the plugin README for details.

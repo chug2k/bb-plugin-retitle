@@ -5,6 +5,8 @@ import {
   decideAutoRename,
   needsMessageCount,
   parseAutoMode,
+  parseReasoningLevel,
+  pickReasoningLevel,
   pickSmallModel,
   type ThreadFacts,
 } from "./policy";
@@ -138,5 +140,29 @@ describe("pickSmallModel", () => {
 
   it("returns undefined for a provider without a small-model list", () => {
     expect(pickSmallModel("pi", new Set(["anything"]))).toBeUndefined();
+  });
+});
+
+describe("parseReasoningLevel", () => {
+  it("keeps an offered level and falls back to low otherwise", () => {
+    expect(parseReasoningLevel("high")).toBe("high");
+    expect(parseReasoningLevel("ultra")).toBe("low");
+    expect(parseReasoningLevel("")).toBe("low");
+  });
+});
+
+describe("pickReasoningLevel", () => {
+  it("uses the setting when the catalog does not list levels", () => {
+    expect(pickReasoningLevel("medium", undefined, "high")).toBe("medium");
+    expect(pickReasoningLevel("medium", [], "high")).toBe("medium");
+  });
+
+  it("uses the setting when the model supports it", () => {
+    expect(pickReasoningLevel("medium", ["low", "medium"], "low")).toBe("medium");
+  });
+
+  it("uses the model default, or none, when the model does not support it", () => {
+    expect(pickReasoningLevel("low", ["medium", "high"], "high")).toBe("high");
+    expect(pickReasoningLevel("low", ["medium", "high"], undefined)).toBeUndefined();
   });
 });

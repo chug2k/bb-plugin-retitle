@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { MAX_TITLE_CHARS, buildPrompt, buildTranscript, cleanTitle } from "./title";
+import {
+  MAX_TITLE_CHARS,
+  MIN_TITLE_CHARS,
+  buildPrompt,
+  buildTranscript,
+  cleanTitle,
+  resolveMaxTitleLength,
+} from "./title";
 
 const user = (preview: string) => ({ role: "user" as const, preview });
 const assistant = (preview: string) => ({ role: "assistant" as const, preview });
@@ -95,6 +102,66 @@ describe("cleanTitle", () => {
     const title = cleanTitle("x".repeat(200));
     expect(title).toHaveLength(MAX_TITLE_CHARS);
     expect(title?.endsWith("…")).toBe(true);
+  });
+
+  it("counts an emoji sequence as one character and never splits it", () => {
+    const coder = "🧑🏽‍💻";
+    expect(cleanTitle(`${"x".repeat(28)}${coder}z`, 30)).toBe(`${"x".repeat(28)}${coder}z`);
+    expect(cleanTitle(`${"x".repeat(28)}${coder}yz`, 30)).toBe(`${"x".repeat(28)}${coder}…`);
+    expect(cleanTitle(`${"x".repeat(29)}${coder}yz`, 30)).toBe(`${"x".repeat(29)}…`);
+  });
+
+  it("does not leave a space before the ellipsis", () => {
+    expect(cleanTitle("Fix flaky login tests", 11)).toBe("Fix flaky…");
+  });
+});
+
+describe("resolveMaxTitleLength", () => {
+  it.each([
+    [undefined, MAX_TITLE_CHARS],
+    [Number.NaN, MAX_TITLE_CHARS],
+    [Number.POSITIVE_INFINITY, MAX_TITLE_CHARS],
+    ["30", MAX_TITLE_CHARS],
+    [0, 10],
+    [-5, 10],
+    [33.7, 33],
+    [1000, MAX_TITLE_CHARS],
+  ])("resolves %j to %j", (value, expected) => {
+    expect(resolveMaxTitleLength(value)).toBe(expected);
+  });
+});
+
+describe("buildPrompt length rule", () => {
+  const base = { transcript: "User: hi", currentTitle: null, emoji: false };
+
+  it("keeps the original rule at 40 characters or more", () => {
+    expect(buildPrompt(base)).toContain("Under about 40 characters");
+    expect(buildPrompt({ ...base, maxTitleLength: 40 })).toContain("Under about 40 characters");
+  });
+
+  it("states a shorter limit exactly", () => {
+    const prompt = buildPrompt({ ...base, maxTitleLength: 24 });
+    expect(prompt).toContain("At most 24 characters, including any emoji and spaces.");
+    expect(prompt).not.toContain("Under about 40 characters");
+  });
+});
+
+describe("buildPrompt examples", () => {
+  const graphemes = (text: string) =>
+    Array.from(new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text)).length;
+  const examplesIn = (prompt: string) =>
+    prompt.split("Example titles:\n")[1]!.split("\n\n")[0]!.split("\n");
+
+  it.each([true, false])("shows only examples that fit the limit (emoji: %s)", (emoji) => {
+    for (let max = MIN_TITLE_CHARS; max <= MAX_TITLE_CHARS; max++) {
+      const examples = examplesIn(
+        buildPrompt({ transcript: "User: hi", currentTitle: null, emoji, maxTitleLength: max }),
+      );
+      expect(examples.length, `limit ${max}`).toBeGreaterThan(0);
+      for (const example of examples) {
+        expect(graphemes(example), `${JSON.stringify(example)} at limit ${max}`).toBeLessThanOrEqual(max);
+      }
+    }
   });
 });
 

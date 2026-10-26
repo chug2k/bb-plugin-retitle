@@ -9,19 +9,34 @@
 // starts a short hidden helper thread on a small model, reads its answer, and
 // deletes it. The helper uses the environment of the renamed thread, so bb
 // does not make a new worktree.
-import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
+import {
+  defineRpcContract,
+  type BbPluginApi,
+  type PluginProviderReasoningLevel,
+} from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import {
   AUTO_MODES,
   DEFAULT_AUTO_MODE_LABEL,
   decideAutoRename,
+  DEFAULT_REASONING_LEVEL,
   needsMessageCount,
   parseAutoMode,
+  parseReasoningLevel,
+  pickReasoningLevel,
   pickSmallModel,
+  REASONING_LEVELS,
   type ThreadFacts,
   type TitleRecord,
 } from "./lib/policy";
-import { buildPrompt, buildTranscript, cleanTitle } from "./lib/title";
+import {
+  buildPrompt,
+  buildTranscript,
+  cleanTitle,
+  MAX_TITLE_CHARS,
+  MIN_TITLE_CHARS,
+  resolveMaxTitleLength,
+} from "./lib/title";
 
 export const rpcContract = defineRpcContract({
   retitle: {
@@ -32,6 +47,12 @@ export const rpcContract = defineRpcContract({
 
 export const HELPER_TITLE = "Retitle helper";
 const HELPER_POLL_MS = 1_000;
+
+interface HelperExecution {
+  providerId: string;
+  model?: string;
+  reasoningLevel?: PluginProviderReasoningLevel;
+}
 
 export default async function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({
@@ -70,6 +91,20 @@ export default async function plugin(bb: BbPluginApi) {
         "Model for the helper thread (see `bb provider models <provider>`). Leave empty to use a small model of the provider.",
       default: "",
     },
+    reasoningLevel: {
+      type: "select",
+      label: "Helper reasoning",
+      description:
+        "Reasoning level for the helper thread. If the provider's model list shows that the helper model does not support it, the model's default level is used.",
+      options: [...REASONING_LEVELS],
+      default: DEFAULT_REASONING_LEVEL,
+    },
+    maxTitleLength: {
+      type: "number",
+      label: "Maximum title length",
+      description: `Longest title in characters, counting the emoji and spaces. Values outside ${MIN_TITLE_CHARS}–${MAX_TITLE_CHARS} are clamped.`,
+      default: MAX_TITLE_CHARS,
+    },
     timeoutSeconds: {
       type: "number",
       label: "Timeout (seconds)",
@@ -84,30 +119,68 @@ export default async function plugin(bb: BbPluginApi) {
   const recordKey = (threadId: string) => `title:${threadId}`;
 
   /**
-   * Select the provider and model for the helper. The provider of the renamed
-   * thread works on this machine, so it is the default. A setting overrides
-   * each value. The plugin uses a small model only when the provider lists it.
+   * Select the provider, model and reasoning level for the helper. The
+   * provider of the renamed thread works on this machine, so it is the
+   * default. A setting overrides each value. The plugin uses a small model
+   * only when the provider lists it.
    */
   async function resolveHelperExecution(thread: {
     providerId: string;
     environmentId: string | null;
-  }): Promise<{ providerId: string; model?: string }> {
+  }): Promise<HelperExecution> {
     const providerId = config.providerId.trim() || thread.providerId;
     const configuredModel = config.model.trim();
-    if (configuredModel !== "") return { providerId, model: configuredModel };
+    const configuredReasoning = parseReasoningLevel(config.reasoningLevel);
+    let catalog: Awaited<ReturnType<typeof bb.sdk.providers.models>>;
     try {
-      const catalog = await bb.sdk.providers.models(
+      catalog = await bb.sdk.providers.models(
         thread.environmentId !== null
           ? { providerId, environmentId: thread.environmentId }
           : { providerId },
       );
-      const available = new Set(catalog.models.flatMap((entry) => [entry.id, entry.model]));
-      const model = pickSmallModel(providerId, available);
-      return model !== undefined ? { providerId, model } : { providerId };
     } catch (error) {
       bb.log.warn(`could not read ${providerId} models; using its default: ${String(error)}`);
-      return { providerId };
+      return {
+        providerId,
+        ...(configuredModel !== "" ? { model: configuredModel } : {}),
+        reasoningLevel: configuredReasoning,
+      };
     }
+    const available = new Set(catalog.models.flatMap((entry) => [entry.id, entry.model]));
+    const model = configuredModel !== "" ? configuredModel : pickSmallModel(providerId, available);
+    // Check the level only against the model that will run. Without a model,
+    // bb chooses it (possibly a remembered project model, not the catalog
+    // default). After a failed catalog read the entries are fallback data.
+    if (catalog.modelLoadError !== null) {
+      bb.log.warn(
+        `could not load ${providerId} models (${catalog.modelLoadError.code}); keeping ${configuredReasoning} reasoning`,
+      );
+    }
+    if (model === undefined || catalog.modelLoadError !== null) {
+      return {
+        providerId,
+        ...(model !== undefined ? { model } : {}),
+        reasoningLevel: configuredReasoning,
+      };
+    }
+    const entry = catalog.models.find(
+      (candidate) => candidate.id === model || candidate.model === model,
+    );
+    const reasoningLevel = pickReasoningLevel<PluginProviderReasoningLevel>(
+      configuredReasoning,
+      entry?.supportedReasoningEfforts?.map((effort) => effort.reasoningEffort),
+      entry?.defaultReasoningEffort,
+    );
+    if (reasoningLevel !== configuredReasoning) {
+      bb.log.info(
+        `${providerId}/${model} does not support ${configuredReasoning} reasoning; using ${reasoningLevel ?? "the bb default"}`,
+      );
+    }
+    return {
+      providerId,
+      ...(model !== undefined ? { model } : {}),
+      ...(reasoningLevel !== undefined ? { reasoningLevel } : {}),
+    };
   }
 
   /** Wait until the helper answers, fails, or the time ends. */
@@ -129,7 +202,7 @@ export default async function plugin(bb: BbPluginApi) {
   async function askHelper(args: {
     projectId: string;
     environmentId: string | null;
-    execution: { providerId: string; model?: string };
+    execution: HelperExecution;
     targetThreadId: string;
     targetArchived: boolean;
     prompt: string;
@@ -147,7 +220,9 @@ export default async function plugin(bb: BbPluginApi) {
         title: HELPER_TITLE,
         providerId: args.execution.providerId,
         ...(args.execution.model !== undefined ? { model: args.execution.model } : {}),
-        reasoningLevel: "low",
+        ...(args.execution.reasoningLevel !== undefined
+          ? { reasoningLevel: args.execution.reasoningLevel }
+          : {}),
         visibility: "hidden",
         // Plugin metadata marks the helper as this plugin's thread, so
         // automatic renaming skips it.
@@ -188,10 +263,12 @@ export default async function plugin(bb: BbPluginApi) {
 
     const environmentId = thread.environmentId ?? null;
     const execution = await resolveHelperExecution({ providerId: thread.providerId, environmentId });
+    const maxTitleLength = resolveMaxTitleLength(config.maxTitleLength);
     const prompt = buildPrompt({
       transcript,
       currentTitle: thread.title ?? null,
       emoji: config.emoji,
+      maxTitleLength,
     });
 
     const title = cleanTitle(
@@ -203,6 +280,7 @@ export default async function plugin(bb: BbPluginApi) {
         targetArchived: thread.archivedAt !== null,
         prompt,
       }),
+      maxTitleLength,
     );
     if (title === null) throw new Error("The helper model returned an empty title.");
 

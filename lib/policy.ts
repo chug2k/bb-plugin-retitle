@@ -103,3 +103,29 @@ export function pickSmallModel(
 ): string | undefined {
   return (SMALL_MODELS[providerId] ?? []).find((model) => available.has(model));
 }
+
+/** Reasoning levels offered in the settings. */
+export const REASONING_LEVELS = ["low", "medium", "high"] as const;
+export type HelperReasoningLevel = (typeof REASONING_LEVELS)[number];
+export const DEFAULT_REASONING_LEVEL: HelperReasoningLevel = "low";
+
+export function parseReasoningLevel(value: string): HelperReasoningLevel {
+  return (REASONING_LEVELS as readonly string[]).includes(value)
+    ? (value as HelperReasoningLevel)
+    : DEFAULT_REASONING_LEVEL;
+}
+
+/**
+ * Pick the reasoning level for the helper. When the model catalog lists the
+ * levels the helper model supports and the setting is not one of them, use
+ * the model's default level from the catalog, or leave the level to bb when
+ * the catalog names none. When the catalog lists no levels, use the setting.
+ */
+export function pickReasoningLevel<Level extends string>(
+  configured: Level,
+  supported: readonly Level[] | undefined,
+  modelDefault: Level | undefined,
+): Level | undefined {
+  if (supported === undefined || supported.length === 0) return configured;
+  return supported.includes(configured) ? configured : modelDefault;
+}
